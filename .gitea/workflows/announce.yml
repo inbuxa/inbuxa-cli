@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Coffey Labs LLC
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Announce each published release on the community forum, in this project's
+# Announcements category (coffey-labs/actions discourse-release; the repo ->
+# category map is its release-map.json). Safe to re-run: one topic per tag.
+name: announce
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  announce:
+    runs-on: light
+    steps:
+      - uses: coffey-labs/actions/discourse-release@6f0888c791db2ad0c40adb53e49b7b35aea3def6
+        with:
+          api-key: ${{ secrets.DISCOURSE_RELEASE_KEY }}
+          discord-webhook: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
