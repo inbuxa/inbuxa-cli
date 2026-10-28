@@ -14,6 +14,7 @@ mod reload;
 mod schema;
 mod secret;
 mod values;
+mod version;
 
 use std::io::{IsTerminal, Write};
 
@@ -35,7 +36,7 @@ use schema::{Kind, Schema, Update};
 #[derive(Parser)]
 #[command(
     name = "inbuxa-cli",
-    version,
+    version = version::shown(),
     about = "Administer an inbuxa server from the command line"
 )]
 #[command(
