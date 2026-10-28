@@ -1,7 +1,7 @@
 [package]
 name = "inbuxa-cli"
 description = "Command-line administration for the inbuxa mail server"
-version = "2026.10.26"
+version = "27.1.0-rc.1"
 authors = ["Coffey Labs LLC <legal@coffeylabs.org>"]
 license = "AGPL-3.0-only"
 repository = "https://git.coffeylabs.org/inbuxa/inbuxa-cli"

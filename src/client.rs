@@ -86,7 +86,7 @@ impl Client {
             .redirect_auth_headers(RedirectAuthHeaders::SameHost)
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(300)))
-            .user_agent(concat!("inbuxa-cli/", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("inbuxa-cli/{}", crate::version::shown()))
             .build()
             .into();
 
