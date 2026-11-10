@@ -4,7 +4,9 @@ Versions follow the inbuxa suite: a series (`27.1`), its patches (`27.1.3`)
 and release candidates before a series ships (`27.1-rc.1`). The tag is the
 version with a `v`. Releases before 27.1 were dated.
 
-## Unreleased
+## [27.1-rc.2]
+
+The store: checks, snapshots and blob store changes from the command line.
 
 - `store`: the server's store check, store snapshots and blob store changes
   (server 27.1-rc.16 or 2026.11.9.1 and later). `store check` and
