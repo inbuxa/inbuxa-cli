@@ -28,6 +28,11 @@ pub enum Error {
     #[error("{0}")]
     Partial(String),
 
+    /// A store check or a copy finished and found problems: what a cron job
+    /// or a backup script should notice.
+    #[error("{0}")]
+    Found(String),
+
     #[error("{0}")]
     Io(#[from] std::io::Error),
 
@@ -38,6 +43,7 @@ pub enum Error {
 impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
+            Error::Found(_) => 1,
             Error::Usage(_) => 2,
             Error::Transport(_) | Error::Io(_) => 3,
             Error::Server(_) | Error::Json(_) => 4,
