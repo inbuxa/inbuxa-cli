@@ -14,6 +14,10 @@ version with a `v`. Releases before 27.1 were dated.
   setting moves, copy it ahead with `store copy`, and write it to the
   setting (server 27.1-rc.18 and later). The new store's settings come from
   a file or standard input, never the command line.
+- `store clean-up`: delete from a settled change's old store what the
+  current store has and checks out, after a `--dry-run` preview; it asks
+  first, since older backups need the old store (server 27.1-rc.19 and
+  later). `store stop-clean-up` stops one.
 
 ## [27.1-rc.1]
 
