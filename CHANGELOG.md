@@ -10,6 +10,10 @@ version with a `v`. Releases before 27.1 were dated.
   (server 27.1-rc.16 or 2026.11.9.1 and later). `store check` and
   `store snapshot` wait for the result; a check or a copy that found
   problems exits 1, and a refusal says why. (#4)
+- `store plan` and `store apply`: plan a blob store change before the
+  setting moves, copy it ahead with `store copy`, and write it to the
+  setting (server 27.1-rc.18 and later). The new store's settings come from
+  a file or standard input, never the command line.
 
 ## [27.1-rc.1]
 

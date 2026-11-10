@@ -106,7 +106,9 @@ snapshots, and moving blobs*). They need the matching permissions:
 | `store snapshots [--json]` | lists the snapshots on disk |
 | `store delete-snapshot ID` | deletes a snapshot's directory |
 | `store changes [ID] [--json]` | lists the blob store changes, or shows one with what a copy couldn't copy |
-| `store copy ID [--blobs-per-second N] [--bytes-per-second N] [--no-wait]` | copies what the old blob store still has, waits; exits 1 when some blobs couldn't be copied |
+| `store plan FILE` | plans a change to the blob store setting in FILE (`-` for standard input), and prints its id |
+| `store copy ID [--blobs-per-second N] [--bytes-per-second N] [--no-wait]` | copies what the old blob store still has, or a planned change's blobs ahead to its store, waits; exits 1 when some blobs couldn't be copied |
+| `store apply ID` | writes a planned change's store to the blob store setting, once it's copied ahead |
 | `store stop-copy ID` | stops a running copy |
 | `store dismiss ID [--yes]` | forgets a change; asks first when it isn't settled |
 
@@ -121,6 +123,21 @@ the new snapshot, and copies nothing when there isn't one:
 
 A refusal (another data store than RocksDB, a blob store change that isn't
 settled, one already being taken) exits 4 with the server's reason.
+
+Moving the blob store with as little reading through as possible (server
+27.1-rc.18 and later): plan the change with the new store's settings, as
+`x:BlobStore` takes them, copy it ahead while the old store is still in use,
+and apply it. When each node restarts on the new setting, the plan becomes
+the change, and a last copy picks up what was written in between.
+
+    id=$(inbuxa-cli store plan s3.json)
+    inbuxa-cli store copy "$id"
+    inbuxa-cli store apply "$id"
+    # restart every node, then:
+    inbuxa-cli store copy "$id"
+
+The file holds credentials, so keep it out of version control and delete
+it after.
 
 ## Plans
 
