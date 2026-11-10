@@ -6,7 +6,8 @@
 
 //! `inbuxa-cli store`: the store check, store snapshots and blob store
 //! changes (inbuxa-server docs/spec/features/store-check.md,
-//! store-snapshot.md, blob-store-change.md). They're under
+//! store-snapshot.md, blob-store-change.md, blob-store-copy-ahead.md).
+//! They're under
 //! `urn:inbuxa:jmap`, not the registry, so the registry commands don't reach
 //! them.
 //!
@@ -94,8 +95,14 @@ pub enum StoreCommand {
         json: bool,
     },
 
+    /// Plan a blob store change before the setting moves: the new store's
+    /// settings, as `x:BlobStore` takes them, from FILE or `-` for standard
+    /// input. Prints the change's id; copy it ahead with `store copy`
+    Plan { file: String },
+
     /// Copy what a blob store change left in the old store to the new one,
-    /// and wait for the result. Exits 1 when some blobs couldn't be copied
+    /// or a planned change's blobs ahead to its store, and wait for the
+    /// result. Exits 1 when some blobs couldn't be copied
     Copy {
         id: String,
         #[arg(long)]
@@ -109,6 +116,10 @@ pub enum StoreCommand {
 
     /// Stop a running copy
     StopCopy { id: String },
+
+    /// Write a planned change's store to the blob store setting, once its
+    /// copy ahead ended copied. It takes effect when the nodes restart
+    Apply { id: String },
 
     /// Forget a blob store change. The server stops reading through to its
     /// old store; nothing is deleted from either store
@@ -225,7 +236,7 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
             report_change(&get_one(client, BLOB_STORE_CHANGE, &id)?, json)
         }
         StoreCommand::Changes { id: None, json } => {
-            let changes = newest_first(get_all(client, BLOB_STORE_CHANGE)?, "changedAt");
+            let changes = changes_first_planned(get_all(client, BLOB_STORE_CHANGE)?);
             if json {
                 return print_json(&Value::Array(changes.into_iter().map(Value::Object).collect()));
             }
@@ -236,7 +247,11 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
                     .map(|c| {
                         vec![
                             text(c, "id"),
-                            text(c, "status"),
+                            if is_planned(c) {
+                                format!("planned, {}", status(c))
+                            } else {
+                                text(c, "status")
+                            },
                             text(c, "changedAt"),
                             text(c, "from"),
                             text(c, "to"),
@@ -244,6 +259,26 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
                     })
                     .collect(),
             )
+        }
+        StoreCommand::Plan { file } => {
+            let target = read_target(&file)?;
+            let id = create_one(client, BLOB_STORE_CHANGE, json!({ "target": target }))?;
+            out!("{id}");
+            if std::io::stderr().is_terminal() {
+                eprintln!(
+                    "planned; copy it ahead with `inbuxa-cli store copy {id}`, then `inbuxa-cli store apply {id}`"
+                );
+            }
+            Ok(())
+        }
+        StoreCommand::Apply { id } => {
+            update_one(client, BLOB_STORE_CHANGE, &id, json!({ "action": "apply" }))?;
+            let change = get_one(client, BLOB_STORE_CHANGE, &id)?;
+            out!(
+                "the blob store setting now names {}; it takes effect when each node restarts",
+                text(&change, "to")
+            );
+            Ok(())
         }
         StoreCommand::Copy {
             id,
@@ -270,6 +305,14 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
         }
         StoreCommand::Dismiss { id, yes } => {
             let change = get_one(client, BLOB_STORE_CHANGE, &id)?;
+            if is_planned(&change) {
+                destroy_one(client, BLOB_STORE_CHANGE, &id)?;
+                out!(
+                    "dismissed {id}; what was copied ahead stays in {}",
+                    text(&change, "to")
+                );
+                return Ok(());
+            }
             if is_unresolved(&change) && !yes {
                 confirm(&format!(
                     "{id} isn't settled ({}): the server stops reading from {}, and anything only it has will be missing. Dismiss it?",
@@ -282,6 +325,29 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The new store's settings for `store plan`: a JSON object, from a file or
+/// standard input, never the command line, since it can hold credentials.
+fn read_target(file: &str) -> Result<Value> {
+    let text = if file == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(file).map_err(|e| Error::Usage(format!("{file}: {e}")))?
+    };
+    parse_target(&text, file)
+}
+
+fn parse_target(text: &str, file: &str) -> Result<Value> {
+    let value: Value =
+        serde_json::from_str(text).map_err(|e| Error::Usage(format!("{file}: not JSON: {e}")))?;
+    if value.get("@type").and_then(Value::as_str).is_none() {
+        return Err(Error::Usage(format!(
+            "{file}: a blob store setting, as x:BlobStore takes it, with its @type \
+             (`inbuxa-cli describe BlobStore` shows them)"
+        )));
+    }
+    Ok(value)
 }
 
 // ── Talking to the server ──
@@ -460,14 +526,39 @@ fn report_change(change: &Map<String, Value>, as_json: bool) -> Result<()> {
         print_json(&Value::Object(change.clone()))?;
     } else {
         out!(
-            "change {}: {} → {}, {}",
+            "{}change {}: {} → {}, {}",
+            if is_planned(change) { "planned " } else { "" },
             text(change, "id"),
             text(change, "from"),
             text(change, "to"),
             status(change)
         );
-        if is_unresolved(change) {
+        if is_planned(change) {
+            match (status(change), text(change, "appliedAt")) {
+                (_, at) if !at.is_empty() => out!(
+                    "applied {at} by {}: it becomes the change when the nodes restart",
+                    text(change, "appliedBy")
+                ),
+                ("copied", _) => out!(
+                    "copied ahead; apply it with `inbuxa-cli store apply {}`",
+                    text(change, "id")
+                ),
+                _ => out!(
+                    "not copied ahead yet: `inbuxa-cli store copy {}`",
+                    text(change, "id")
+                ),
+            }
+        } else if is_unresolved(change) {
             out!("not settled: the server still reads what it can't find from the old store");
+        }
+        if let Some(ahead) = change.get("copiedAhead").and_then(Value::as_object) {
+            out!(
+                "copied ahead: {} copied, {} already there, {}, {}",
+                number(ahead, "copied"),
+                number(ahead, "alreadyThere"),
+                size(ahead.get("bytesCopied").and_then(Value::as_u64).unwrap_or(0)),
+                status(ahead)
+            );
         }
         if change.get("copyStartedAt").is_some_and(|v| !v.is_null()) {
             out!(
@@ -505,15 +596,19 @@ fn report_change(change: &Map<String, Value>, as_json: bool) -> Result<()> {
             kept_note(problems.len() as u64, change_problems(change))?;
         }
     }
+    let (copy, after) = if is_planned(change) {
+        ("the copy ahead", "it can't be applied yet")
+    } else {
+        ("the copy", "the change isn't settled")
+    };
     match status(change) {
         "incomplete" => Err(Error::Found(format!(
-            "the copy couldn't copy {} blob(s); the change isn't settled",
+            "{copy} couldn't copy {} blob(s); {after}",
             change_problems(change)
         ))),
-        "stopped" | "failed" | "interrupted" => Err(Error::Partial(format!(
-            "the copy {}; the change isn't settled",
-            status(change)
-        ))),
+        "stopped" | "failed" | "interrupted" => {
+            Err(Error::Partial(format!("{copy} {}; {after}", status(change))))
+        }
         _ => Ok(()),
     }
 }
@@ -571,9 +666,21 @@ fn change_problems(change: &Map<String, Value>) -> u64 {
         .sum()
 }
 
-/// BM-3: a change the server still reads through.
+/// BM-3: a change the server still reads through. A planned one never is.
 fn is_unresolved(change: &Map<String, Value>) -> bool {
-    !matches!(status(change), "copied" | "reverted")
+    !is_planned(change) && !matches!(status(change), "copied" | "reverted")
+}
+
+/// CA-1: planned, the setting not moved yet.
+fn is_planned(change: &Map<String, Value>) -> bool {
+    text(change, "stage") == "planned"
+}
+
+/// Changes newest first, the planned one, which hasn't happened yet, on top.
+fn changes_first_planned(items: Vec<Map<String, Value>>) -> Vec<Map<String, Value>> {
+    let (mut planned, rest): (Vec<_>, Vec<_>) = items.into_iter().partition(is_planned);
+    planned.extend(newest_first(rest, "changedAt"));
+    planned
 }
 
 fn problems(item: &Map<String, Value>) -> Vec<Map<String, Value>> {
@@ -737,6 +844,55 @@ mod tests {
         assert_eq!(report_change(&stopped, true).unwrap_err().exit_code(), 5);
         let copied = object(json!({"id": "a", "status": "copied"}));
         assert!(report_change(&copied, true).is_ok());
+    }
+
+    #[test]
+    fn a_planned_change_is_never_unsettled() {
+        for s in ["pending", "copying", "incomplete", "copied"] {
+            assert!(
+                !is_unresolved(&object(json!({ "stage": "planned", "status": s }))),
+                "{s}"
+            );
+        }
+        assert!(is_unresolved(&object(
+            json!({ "stage": "changed", "status": "pending" })
+        )));
+        // A server from before planning sends no stage
+        assert!(is_unresolved(&object(json!({ "status": "pending" }))));
+    }
+
+    #[test]
+    fn a_copy_ahead_that_left_blobs_behind_exits_1() {
+        let incomplete = object(json!({"id": "a", "stage": "planned", "status": "incomplete", "missing": 1}));
+        let err = report_change(&incomplete, true).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(err.to_string().contains("can't be applied yet"), "{err}");
+    }
+
+    #[test]
+    fn the_planned_change_lists_first() {
+        let items = vec![
+            object(json!({"id": "a", "changedAt": "2026-11-09T00:00:00Z"})),
+            object(json!({"id": "c", "stage": "planned", "changedAt": null})),
+            object(json!({"id": "b", "changedAt": "2026-11-10T00:00:00Z"})),
+        ];
+        let ids: Vec<String> = changes_first_planned(items)
+            .iter()
+            .map(|c| text(c, "id"))
+            .collect();
+        assert_eq!(ids, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn a_target_needs_its_type() {
+        assert!(parse_target(r#"{"@type": "FileSystem", "path": "/srv/blobs"}"#, "f").is_ok());
+        assert_eq!(
+            parse_target(r#"{"path": "/srv/blobs"}"#, "f")
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
+        assert_eq!(parse_target("not json", "f").unwrap_err().exit_code(), 2);
     }
 
     #[test]
