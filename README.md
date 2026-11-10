@@ -71,6 +71,7 @@ address.
 | `reload [settings\|tls\|lookups\|blocked-ips]` | applies saved settings on the running server |
 | `snapshot [TYPE…] [-o FILE]` | writes the settings as a plan |
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
+| `store …` | checks the store, takes snapshots, copies after a blob store change: see [The store](#the-store) |
 
 A value that reads as JSON is JSON (`true`, `42`, `["a","b"]`,
 `{"@type":"Stdout"}`); anything else is a string, so `name=example.com` needs
@@ -88,6 +89,38 @@ current server does that after every write that needs it, and inbuxa-cli
 reports when a reload failed. An older one doesn't, and inbuxa-cli sends the
 reload itself. Stores (data, blob, search and the rest) take effect only when
 the server restarts, and inbuxa-cli says so.
+
+## The store
+
+The server's store check, store snapshots and blob store changes (server
+27.1-rc.16 or 2026.11.9.1 and later; docs.inbuxa.org, *Checking the store,
+snapshots, and moving blobs*). They need the matching permissions:
+`sysStoreCheck`, `sysStoreSnapshot` and `sysBlobStoreChange`.
+
+| Command | Does |
+| --- | --- |
+| `store check [--full] [--blobs-per-second N] [--bytes-per-second N] [--no-wait] [--json]` | starts a check, waits, prints what it found; exits 1 when it found problems |
+| `store checks [ID] [--json]` | lists the latest checks, or shows one with its problems |
+| `store stop-check ID` | stops a running check |
+| `store snapshot [--no-wait] [--json]` | takes a snapshot, waits, prints its directory |
+| `store snapshots [--json]` | lists the snapshots on disk |
+| `store delete-snapshot ID` | deletes a snapshot's directory |
+| `store changes [ID] [--json]` | lists the blob store changes, or shows one with what a copy couldn't copy |
+| `store copy ID [--blobs-per-second N] [--bytes-per-second N] [--no-wait]` | copies what the old blob store still has, waits; exits 1 when some blobs couldn't be copied |
+| `store stop-copy ID` | stops a running copy |
+| `store dismiss ID [--yes]` | forgets a change; asks first when it isn't settled |
+
+A nightly check from cron, mailed when it finds something or can't run:
+
+    inbuxa-cli store check --full > /tmp/store-check.txt || mail -s "store check" root < /tmp/store-check.txt
+
+A backup job on the server's machine (the path is on the server) that copies
+the new snapshot, and copies nothing when there isn't one:
+
+    dir=$(inbuxa-cli store snapshot) && rsync -a "$dir/" backup:/srv/inbuxa/
+
+A refusal (another data store than RocksDB, a blob store change that isn't
+settled, one already being taken) exits 4 with the server's reason.
 
 ## Plans
 
@@ -150,6 +183,7 @@ failed) and a count of each at the end.
 | Status | Means |
 | --- | --- |
 | 0 | done |
+| 1 | a store check or a copy finished and found problems |
 | 2 | the command line or the plan asks for something that can't work |
 | 3 | the server couldn't be reached |
 | 4 | the server refused the request: bad credentials, a missing permission |

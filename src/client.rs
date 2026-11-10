@@ -23,6 +23,9 @@ use crate::error::{Error, Result};
 
 pub const REGISTRY: &str = "urn:inbuxa:jmap:registry";
 const CORE: &str = "urn:ietf:params:jmap:core";
+/// The server's own objects outside the registry: the store check, store
+/// snapshots, blob store changes.
+const INBUXA: &str = "urn:inbuxa:jmap";
 
 /// The schema is about a megabyte; leave room for it to grow.
 const MAX_BODY: u64 = 64 * 1024 * 1024;
@@ -180,9 +183,10 @@ impl Client {
             .map_err(|e| Error::Transport(format!("{url} didn't answer with JSON: {e}")))
     }
 
-    /// Sends method calls in one request and returns their answers, in order.
-    /// Every call gets the primary account unless it names one.
-    pub fn request(&self, calls: Vec<(String, Value)>) -> Result<Vec<Response>> {
+    /// Sends method calls in one request, naming the capabilities in
+    /// `using`, and returns their answers, in order. Every call gets the
+    /// primary account unless it names one.
+    fn request_using(&self, calls: Vec<(String, Value)>, using: &[&str]) -> Result<Vec<Response>> {
         let method_calls: Vec<Value> = calls
             .into_iter()
             .enumerate()
@@ -194,7 +198,7 @@ impl Client {
                 json!([name, args, i.to_string()])
             })
             .collect();
-        let body = json!({ "using": [CORE, REGISTRY], "methodCalls": method_calls });
+        let body = json!({ "using": using, "methodCalls": method_calls });
         let url = format!("{}{}", self.base, self.api_url);
         let mut response = self
             .agent
@@ -234,7 +238,18 @@ impl Client {
     /// One method call, its answer, and an error if the server answered
     /// `error` instead.
     pub fn call(&self, name: &str, args: Value) -> Result<Value> {
-        let mut responses = self.request(vec![(name.to_owned(), args)])?;
+        self.call_using(name, args, &[CORE, REGISTRY])
+    }
+
+    /// As [`Client::call`], for an object under `urn:inbuxa:jmap` rather
+    /// than the registry. Only these requests name that capability, so the
+    /// rest keep working with a server that doesn't have it.
+    pub fn call_inbuxa(&self, name: &str, args: Value) -> Result<Value> {
+        self.call_using(name, args, &[CORE, REGISTRY, INBUXA])
+    }
+
+    fn call_using(&self, name: &str, args: Value, using: &[&str]) -> Result<Value> {
+        let mut responses = self.request_using(vec![(name.to_owned(), args)], using)?;
         let (answer, args, _) = responses
             .pop()
             .ok_or_else(|| Error::Transport(format!("no answer to {name}")))?;

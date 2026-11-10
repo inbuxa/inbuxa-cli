@@ -13,6 +13,7 @@ mod plan;
 mod reload;
 mod schema;
 mod secret;
+mod store;
 mod values;
 mod version;
 
@@ -126,6 +127,10 @@ enum Command {
         output: Option<String>,
     },
 
+    /// Check the store, take snapshots, and copy after a blob store change
+    #[command(subcommand)]
+    Store(store::StoreCommand),
+
     /// Make the server match a plan
     Apply {
         /// The plan, or - for standard input
@@ -236,6 +241,7 @@ fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Snapshot { types, output } => snapshot(&client, &schema, &types, output.as_deref()),
+        Command::Store(command) => store::run(&client, command),
         Command::Apply {
             file,
             dry_run,
