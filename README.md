@@ -110,6 +110,8 @@ snapshots, and moving blobs*). They need the matching permissions:
 | `store copy ID [--blobs-per-second N] [--bytes-per-second N] [--no-wait]` | copies what the old blob store still has, or a planned change's blobs ahead to its store, waits; exits 1 when some blobs couldn't be copied |
 | `store apply ID` | writes a planned change's store to the blob store setting, once it's copied ahead |
 | `store stop-copy ID` | stops a running copy |
+| `store clean-up ID [--dry-run] [--yes] [--blobs-per-second N] [--bytes-per-second N] [--no-wait]` | deletes from a settled change's old store each blob the current store has and checks out, waits; `--dry-run` only counts; asks first unless `--yes`; exits 1 when some blobs stayed |
+| `store stop-clean-up ID` | stops a running cleanup or preview |
 | `store dismiss ID [--yes]` | forgets a change; asks first when it isn't settled |
 
 A nightly check from cron, mailed when it finds something or can't run:
@@ -138,6 +140,18 @@ the change, and a last copy picks up what was written in between.
 
 The file holds credentials, so keep it out of version control and delete
 it after.
+
+Once a change is settled, the old store still has a copy of every blob it
+held (server 27.1-rc.19 and later keep it so it can be cleaned up). Backups
+of the data store taken before the change read their blobs from it, so
+clean it up once those backups have aged out. Preview first:
+
+    inbuxa-cli store clean-up "$id" --dry-run
+    inbuxa-cli store clean-up "$id"
+
+A blob whose copy in the current store doesn't check out stays in the old
+store and is listed; put it right (a full `store check` finds it) and run
+the cleanup again.
 
 ## Plans
 

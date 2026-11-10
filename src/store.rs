@@ -6,14 +6,15 @@
 
 //! `inbuxa-cli store`: the store check, store snapshots and blob store
 //! changes (inbuxa-server docs/spec/features/store-check.md,
-//! store-snapshot.md, blob-store-change.md, blob-store-copy-ahead.md).
+//! store-snapshot.md, blob-store-change.md, blob-store-copy-ahead.md,
+//! blob-store-cleanup.md).
 //! They're under
 //! `urn:inbuxa:jmap`, not the registry, so the registry commands don't reach
 //! them.
 //!
 //! The commands that start something wait for it by default and end with an
-//! exit status a script can trust: 0 when it's done and clean, 1 when a check
-//! or a copy found problems, and the usual errors otherwise.
+//! exit status a script can trust: 0 when it's done and clean, 1 when a check,
+//! a copy or a cleanup found problems, and the usual errors otherwise.
 
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
@@ -116,6 +117,30 @@ pub enum StoreCommand {
 
     /// Stop a running copy
     StopCopy { id: String },
+
+    /// Delete from a settled change's old store each blob the current store
+    /// has and checks out, and wait for the result. A blob that doesn't check
+    /// out stays and is listed; exits 1 when any did. Backups of the data
+    /// store taken before the change need the old store to restore in full
+    CleanUp {
+        id: String,
+        /// Count what would be deleted, and delete nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete without asking: backups from before the change have aged out
+        #[arg(long, short)]
+        yes: bool,
+        #[arg(long)]
+        blobs_per_second: Option<u64>,
+        #[arg(long)]
+        bytes_per_second: Option<u64>,
+        /// Return once it has started
+        #[arg(long)]
+        no_wait: bool,
+    },
+
+    /// Stop a running cleanup or preview
+    StopCleanUp { id: String },
 
     /// Write a planned change's store to the blob store setting, once its
     /// copy ahead ended copied. It takes effect when the nodes restart
@@ -247,10 +272,13 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
                     .map(|c| {
                         vec![
                             text(c, "id"),
-                            if is_planned(c) {
-                                format!("planned, {}", status(c))
-                            } else {
-                                text(c, "status")
+                            match cleanup(c) {
+                                _ if is_planned(c) => format!("planned, {}", status(c)),
+                                Some(run) if is_dry_run(run) => {
+                                    format!("{}, preview {}", status(c), status(run))
+                                }
+                                Some(run) => format!("{}, cleanup {}", status(c), status(run)),
+                                None => text(c, "status"),
                             },
                             text(c, "changedAt"),
                             text(c, "from"),
@@ -303,6 +331,58 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
             out!("stopping the copy of {id}: what it copied stays copied");
             Ok(())
         }
+        StoreCommand::CleanUp {
+            id,
+            dry_run,
+            yes,
+            blobs_per_second,
+            bytes_per_second,
+            no_wait,
+        } => {
+            let mut patch = if dry_run {
+                json!({ "action": "cleanUp", "dryRun": true })
+            } else {
+                if !yes {
+                    let change = get_one(client, BLOB_STORE_CHANGE, &id)?;
+                    confirm(
+                        &format!(
+                            "Backups of the data store taken before {} need {}'s blobs to restore in full. Delete the server's blobs from {}?",
+                            text(&change, "changedAt"),
+                            text(&change, "from"),
+                            text(&change, "from")
+                        ),
+                        "nothing deleted",
+                    )?;
+                }
+                json!({ "action": "cleanUp", "confirm": id })
+            };
+            limits(&mut patch, blobs_per_second, bytes_per_second);
+            update_one(client, BLOB_STORE_CHANGE, &id, patch)?;
+            if no_wait {
+                out!(
+                    "{} {id}",
+                    if dry_run {
+                        "previewing the cleanup of"
+                    } else {
+                        "cleaning up"
+                    }
+                );
+                return Ok(());
+            }
+            let change = wait_cleanup(client, &id)?;
+            report_cleanup(&change)
+        }
+        StoreCommand::StopCleanUp { id } => {
+            let change = get_one(client, BLOB_STORE_CHANGE, &id)?;
+            let preview = cleanup(&change).is_some_and(is_dry_run);
+            update_one(client, BLOB_STORE_CHANGE, &id, json!({ "action": "stop" }))?;
+            if preview {
+                out!("stopping the cleanup preview of {id}");
+            } else {
+                out!("stopping the cleanup of {id}: what it deleted stays deleted");
+            }
+            Ok(())
+        }
         StoreCommand::Dismiss { id, yes } => {
             let change = get_one(client, BLOB_STORE_CHANGE, &id)?;
             if is_planned(&change) {
@@ -314,11 +394,14 @@ pub fn run(client: &Client, command: StoreCommand) -> Result<()> {
                 return Ok(());
             }
             if is_unresolved(&change) && !yes {
-                confirm(&format!(
-                    "{id} isn't settled ({}): the server stops reading from {}, and anything only it has will be missing. Dismiss it?",
-                    status(&change),
-                    text(&change, "from")
-                ))?;
+                confirm(
+                    &format!(
+                        "{id} isn't settled ({}): the server stops reading from {}, and anything only it has will be missing. Dismiss it?",
+                        status(&change),
+                        text(&change, "from")
+                    ),
+                    "not dismissed",
+                )?;
             }
             destroy_one(client, BLOB_STORE_CHANGE, &id)?;
             out!("dismissed {id}; nothing was deleted from either store");
@@ -440,7 +523,7 @@ fn wait(
     }
 }
 
-fn confirm(question: &str) -> Result<()> {
+fn confirm(question: &str, refused: &str) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         return Err(Error::Usage(format!(
             "{question} Give --yes to do it without asking"
@@ -453,7 +536,7 @@ fn confirm(question: &str) -> Result<()> {
     if matches!(answer.trim(), "y" | "Y" | "yes") {
         Ok(())
     } else {
-        Err(Error::Usage("not dismissed".into()))
+        Err(Error::Usage(refused.into()))
     }
 }
 
@@ -550,6 +633,42 @@ fn report_change(change: &Map<String, Value>, as_json: bool) -> Result<()> {
             }
         } else if is_unresolved(change) {
             out!("not settled: the server still reads what it can't find from the old store");
+        } else if change.get("oldStoreKept").and_then(Value::as_bool) == Some(true) {
+            let id = text(change, "id");
+            match cleanup(change) {
+                None => out!(
+                    "the old store still has its blobs; preview a cleanup with `inbuxa-cli store clean-up {id} --dry-run`"
+                ),
+                Some(run) if is_dry_run(run) && status(run) == "done" => {
+                    out!("previewed; clean up with `inbuxa-cli store clean-up {id}`")
+                }
+                Some(run) if !is_dry_run(run) && status(run) == "incomplete" => out!(
+                    "some blobs stay in the old store; put them right and run `inbuxa-cli store clean-up {id}` again"
+                ),
+                Some(_) => {}
+            }
+        }
+        if let Some(run) = cleanup(change) {
+            out!(
+                "latest {}: {}, {} {} ({}), {} kept",
+                if is_dry_run(run) {
+                    "cleanup preview"
+                } else {
+                    "cleanup"
+                },
+                status(run),
+                number(run, "deleted"),
+                if is_dry_run(run) {
+                    "would be deleted"
+                } else {
+                    "deleted"
+                },
+                size(count(run, "bytesFreed")),
+                thousands(cleanup_kept(run))
+            );
+            if cleanup_kept(run) > 0 {
+                problem_table(&problems(run), cleanup_kept(run))?;
+            }
         }
         if let Some(ahead) = change.get("copiedAhead").and_then(Value::as_object) {
             out!(
@@ -574,26 +693,9 @@ fn report_change(change: &Map<String, Value>, as_json: bool) -> Result<()> {
             );
         }
         let counts = counts(change, &["missing", "damaged", "unreadable"]);
-        if !counts.is_empty() {
+        if !counts.is_empty() && cleanup(change).is_none() {
             out!("{counts}");
-            let problems = problems(change);
-            table(
-                &["PROBLEM", "HELD BY", "ACCOUNT", "ID", "BLOB", "DETAIL"],
-                problems
-                    .iter()
-                    .map(|p| {
-                        vec![
-                            text(p, "kind"),
-                            text(p, "holder"),
-                            text(p, "accountId"),
-                            text(p, "objectId"),
-                            text(p, "blobId"),
-                            text(p, "detail"),
-                        ]
-                    })
-                    .collect(),
-            )?;
-            kept_note(problems.len() as u64, change_problems(change))?;
+            problem_table(&problems(change), change_problems(change))?;
         }
     }
     let (copy, after) = if is_planned(change) {
@@ -613,6 +715,98 @@ fn report_change(change: &Map<String, Value>, as_json: bool) -> Result<()> {
     }
 }
 
+/// Looks again until the change's cleanup leaves `running`, as [`wait`] does.
+fn wait_cleanup(client: &Client, id: &str) -> Result<Map<String, Value>> {
+    let shown = std::io::stderr().is_terminal();
+    if shown {
+        eprintln!("{id} started; Ctrl-C stops waiting, not the cleanup");
+    }
+    loop {
+        let change = get_one(client, BLOB_STORE_CHANGE, id)?;
+        match cleanup(&change) {
+            Some(run) if status(run) == "running" => {
+                if shown {
+                    eprint!(
+                        "\r\x1b[K{} {} · {} {}",
+                        if is_dry_run(run) {
+                            "previewing"
+                        } else {
+                            "cleaning up"
+                        },
+                        percent(run),
+                        number(run, "deleted"),
+                        if is_dry_run(run) { "to delete" } else { "deleted" }
+                    );
+                }
+                std::thread::sleep(POLL);
+            }
+            _ => {
+                if shown {
+                    eprint!("\r\x1b[K");
+                }
+                return Ok(change);
+            }
+        }
+    }
+}
+
+/// OC-4 to OC-6: a cleanup or preview, what it kept, and what that means for
+/// the exit status.
+fn report_cleanup(change: &Map<String, Value>) -> Result<()> {
+    let Some(run) = cleanup(change) else {
+        return Err(Error::Server("the change has no cleanup".into()));
+    };
+    let preview = is_dry_run(run);
+    out!(
+        "{} of {}: {}{}",
+        if preview { "cleanup preview" } else { "cleanup" },
+        text(change, "from"),
+        status(run),
+        match text(run, "error") {
+            e if e.is_empty() => String::new(),
+            e => format!(" ({e})"),
+        }
+    );
+    out!(
+        "{} blobs looked at, {} {} ({}), {} not in the old store",
+        number(run, "blobsChecked"),
+        number(run, "deleted"),
+        if preview { "would be deleted" } else { "deleted" },
+        size(count(run, "bytesFreed")),
+        number(run, "notThere")
+    );
+    if count(run, "snapshotsBefore") > 0 {
+        out!(
+            "{} snapshot(s) from before the change still hold the old blobs",
+            number(run, "snapshotsBefore")
+        );
+    }
+    let kept = cleanup_kept(run);
+    let counts = counts(run, &["missing", "damaged", "different", "unreadable"]);
+    if !counts.is_empty() {
+        out!("kept in the old store: {counts}");
+        problem_table(&problems(run), kept)?;
+    }
+    match status(run) {
+        "done" if preview => {
+            out!(
+                "nothing deleted; clean up with `inbuxa-cli store clean-up {}`",
+                text(change, "id")
+            );
+            Ok(())
+        }
+        "done" => {
+            out!("none of the server's blobs are in the old store any more");
+            Ok(())
+        }
+        "incomplete" => Err(Error::Found(format!(
+            "{kept} blob(s) stay in the old store: the current store's copy didn't check out"
+        ))),
+        "running" => Ok(()),
+        other => Err(Error::Partial(format!("the cleanup {other}"))),
+    }
+}
+
 /// What a finished check means for the exit status.
 fn outcome(status: &str, problems: u64, what: &str) -> Result<()> {
     match status {
@@ -621,6 +815,27 @@ fn outcome(status: &str, problems: u64, what: &str) -> Result<()> {
         "running" => Ok(()),
         other => Err(Error::Partial(format!("{what} {other}"))),
     }
+}
+
+/// The problems a copy or a cleanup kept, and a note when there were more.
+fn problem_table(problems: &[Map<String, Value>], total: u64) -> Result<()> {
+    table(
+        &["PROBLEM", "HELD BY", "ACCOUNT", "ID", "BLOB", "DETAIL"],
+        problems
+            .iter()
+            .map(|p| {
+                vec![
+                    text(p, "kind"),
+                    text(p, "holder"),
+                    text(p, "accountId"),
+                    text(p, "objectId"),
+                    text(p, "blobId"),
+                    text(p, "detail"),
+                ]
+            })
+            .collect(),
+    )?;
+    kept_note(problems.len() as u64, total)
 }
 
 fn kept_note(kept: u64, total: u64) -> Result<()> {
@@ -663,6 +878,22 @@ fn change_problems(change: &Map<String, Value>) -> u64 {
     ["missing", "damaged", "unreadable"]
         .iter()
         .map(|k| count(change, k))
+        .sum()
+}
+
+/// OC-6: a change's latest cleanup or preview.
+fn cleanup(change: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    change.get("cleanup").and_then(Value::as_object)
+}
+
+fn is_dry_run(run: &Map<String, Value>) -> bool {
+    run.get("dryRun").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn cleanup_kept(run: &Map<String, Value>) -> u64 {
+    ["missing", "damaged", "different", "unreadable"]
+        .iter()
+        .map(|k| count(run, k))
         .sum()
 }
 
@@ -844,6 +1075,22 @@ mod tests {
         assert_eq!(report_change(&stopped, true).unwrap_err().exit_code(), 5);
         let copied = object(json!({"id": "a", "status": "copied"}));
         assert!(report_change(&copied, true).is_ok());
+    }
+
+    #[test]
+    fn a_cleanup_that_kept_blobs_exits_1() {
+        let with = |run: Value| object(json!({"id": "a", "status": "copied", "from": "old", "cleanup": run}));
+        let done = with(json!({"status": "done", "deleted": 3, "bytesFreed": 900}));
+        assert!(report_cleanup(&done).is_ok());
+        let preview = with(json!({"status": "done", "dryRun": true, "deleted": 3}));
+        assert!(report_cleanup(&preview).is_ok());
+        let kept = with(json!({"status": "incomplete", "missing": 1, "different": 1, "problems": []}));
+        assert_eq!(cleanup_kept(cleanup(&kept).unwrap()), 2);
+        assert_eq!(report_cleanup(&kept).unwrap_err().exit_code(), 1);
+        let stopped = with(json!({"status": "stopped"}));
+        assert_eq!(report_cleanup(&stopped).unwrap_err().exit_code(), 5);
+        let none = object(json!({"id": "a", "status": "copied"}));
+        assert!(report_cleanup(&none).is_err());
     }
 
     #[test]
