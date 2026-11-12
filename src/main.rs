@@ -17,6 +17,7 @@ mod schema;
 mod secret;
 mod store;
 mod values;
+mod verbs;
 mod version;
 
 use std::io::{IsTerminal, Write};
@@ -113,6 +114,18 @@ enum Command {
         #[arg(required = true)]
         ids: Vec<String>,
     },
+
+    /// Add and manage accounts: add, set-password, add-alias
+    #[command(subcommand)]
+    Account(verbs::AccountCmd),
+
+    /// Add a domain
+    #[command(subcommand)]
+    Domain(verbs::DomainCmd),
+
+    /// Add a group account
+    #[command(subcommand)]
+    Group(verbs::GroupCmd),
 
     /// Apply saved settings on the running server
     Reload {
@@ -272,6 +285,9 @@ fn run(cli: Cli) -> Result<()> {
             )
         }
         Command::Delete { r#type, ids } => delete(&client, &schema, &schema.resolve(&r#type)?, &ids),
+        Command::Account(cmd) => verbs::account(&client, &schema, cmd),
+        Command::Domain(cmd) => verbs::domain(&client, &schema, cmd),
+        Command::Group(cmd) => verbs::group(&client, &schema, cmd),
         Command::Reload { what } => {
             let mut actions = Vec::new();
             for word in if what.is_empty() {
