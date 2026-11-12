@@ -185,6 +185,15 @@ impl Schema {
             .as_object()
     }
 
+    /// The console's list configuration for a view, as `/api/schema` serves
+    /// it under `lists`: the columns it shows, and the `itemActions` and
+    /// `massActions` it offers. A command that drives a list reads these
+    /// rather than hard-coding them, so it follows whatever the server
+    /// declares.
+    pub fn list_spec(&self, view: &str) -> Option<&Map<String, Value>> {
+        self.section("lists").get(view).and_then(Value::as_object)
+    }
+
     pub fn update_rule(spec: &Value) -> Update {
         match spec.get("update").and_then(Value::as_str) {
             Some("serverSet") => Update::ServerSet,
