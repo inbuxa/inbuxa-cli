@@ -10,6 +10,7 @@
 mod client;
 mod error;
 mod plan;
+mod queue;
 mod reload;
 mod schema;
 mod secret;
@@ -131,6 +132,10 @@ enum Command {
     #[command(subcommand)]
     Store(store::StoreCommand),
 
+    /// See and act on the outbound SMTP queue
+    #[command(subcommand)]
+    Queue(queue::QueueCommand),
+
     /// Make the server match a plan
     Apply {
         /// The plan, or - for standard input
@@ -242,6 +247,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Snapshot { types, output } => snapshot(&client, &schema, &types, output.as_deref()),
         Command::Store(command) => store::run(&client, command),
+        Command::Queue(command) => queue::run(&client, &schema, command),
         Command::Apply {
             file,
             dry_run,
