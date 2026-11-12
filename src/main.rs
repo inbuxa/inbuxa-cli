@@ -127,6 +127,12 @@ enum Command {
     #[command(subcommand)]
     Group(verbs::GroupCmd),
 
+    /// Print the DNS records a domain needs, as a zone file
+    Dns {
+        /// The domain's name or id
+        domain: String,
+    },
+
     /// Apply saved settings on the running server
     Reload {
         /// settings, tls, lookups or blocked-ips; settings if none
@@ -288,6 +294,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Account(cmd) => verbs::account(&client, &schema, cmd),
         Command::Domain(cmd) => verbs::domain(&client, &schema, cmd),
         Command::Group(cmd) => verbs::group(&client, &schema, cmd),
+        Command::Dns { domain } => dns(&client, &schema, &domain),
         Command::Reload { what } => {
             let mut actions = Vec::new();
             for word in if what.is_empty() {
@@ -532,6 +539,26 @@ fn get(client: &Client, schema: &Schema, object: &str, names: &[String]) -> Resu
         }
         _ => print_json(&Value::Array(items.into_iter().map(Value::Object).collect())),
     }
+}
+
+/// Prints the DNS records a domain needs: the zone file the server keeps
+/// ready for it, with its current DKIM key, as a domain's DNS page shows them.
+fn dns(client: &Client, schema: &Schema, domain: &str) -> Result<()> {
+    let object = schema.resolve("x:Domain")?;
+    let id = plan::find_id(client, schema, &object, domain)?;
+    let items = client.get_properties(&object, &[id], Some(&["dnsZoneFile"]))?;
+    let zone = items
+        .first()
+        .and_then(|d| d.get("dnsZoneFile"))
+        .and_then(Value::as_str)
+        .filter(|z| !z.trim().is_empty())
+        .ok_or_else(|| Error::Server(format!("the server has no DNS records for {domain} yet")))?;
+    let mut out = std::io::stdout().lock();
+    out.write_all(zone.as_bytes())?;
+    if !zone.ends_with('\n') {
+        writeln!(out)?;
+    }
+    Ok(())
 }
 
 /// Applies what a write needs applying, and says what's left to do.

@@ -82,6 +82,7 @@ address.
 | `group add EMAIL [name=value…]` | adds a group account from an address |
 | `account set-password EMAIL` | sets or replaces an account's password |
 | `account add-alias EMAIL ALIAS` | adds an email alias to an account |
+| `dns DOMAIN` | prints the DNS records a domain needs, as a zone file |
 | `reload [settings\|tls\|lookups\|blocked-ips]` | applies saved settings on the running server |
 | `snapshot [TYPE…] [-o FILE]` | writes the settings as a plan |
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
@@ -99,6 +100,12 @@ key: `domainId=@x:Domain/example.com`.
     inbuxa-cli update Account alice@example.com description="Alice Liddell"
     inbuxa-cli update Http usePermissiveCors=false
     inbuxa-cli delete Account alice@example.com
+
+`dns` prints the records a domain needs, as a zone file with its current DKIM
+key, the same ones the installer writes to `dns.zone`. Pipe it where your DNS
+lives, or read it to set the records by hand:
+
+    inbuxa-cli dns example.com
 
 Most settings take effect when the server reloads its configuration. A
 current server does that after every write that needs it, and inbuxa-cli
