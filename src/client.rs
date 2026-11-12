@@ -314,6 +314,76 @@ impl Client {
         let ids = self.all_ids(object, None)?;
         self.get(object, &ids)
     }
+
+    /// The plain-text body of a GET, for the few endpoints that answer with a
+    /// token or a short string rather than JSON.
+    fn get_text(&self, path: &str) -> Result<String> {
+        let url = format!("{}{path}", self.base);
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Authorization", self.auth.header())
+            .call()
+            .map_err(|e| Error::Transport(format!("{url}: {e}")))?;
+        let status = response.status().as_u16();
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_to_string()
+            .map_err(|e| Error::Transport(format!("{url}: {e}")))?;
+        if status != 200 {
+            return Err(http_error(status, &body));
+        }
+        Ok(body)
+    }
+
+    /// Opens one of the server's live Server-Sent Events streams, `tracing`
+    /// or `metrics`. It mints the stream's short-lived token from
+    /// `/api/token/<kind>` with the signed-in credentials, then opens
+    /// `/api/live/<kind>` with that token and `params` in the query — an
+    /// event stream carries its token in the URL, since it can't set an
+    /// Authorization header. The reader blocks frame by frame until the
+    /// stream ends (the server closes each after 30 minutes).
+    pub fn open_live(&self, kind: &str, params: &[(String, String)]) -> Result<impl std::io::Read> {
+        let token = self.get_text(&format!("/api/token/{kind}"))?;
+        let mut url = format!("{}/api/live/{kind}?token={}", self.base, encode(token.trim()));
+        for (key, value) in params {
+            url.push('&');
+            url.push_str(&encode(key));
+            url.push('=');
+            url.push_str(&encode(value));
+        }
+        let mut response = self
+            .agent
+            .get(&url)
+            .header("Accept", "text/event-stream")
+            .call()
+            .map_err(|e| Error::Transport(format!("{}/api/live/{kind}: {e}", self.base)))?;
+        let status = response.status().as_u16();
+        if status != 200 {
+            let body = response
+                .body_mut()
+                .with_config()
+                .limit(64 * 1024)
+                .read_to_string()
+                .unwrap_or_default();
+            return Err(http_error(status, &body));
+        }
+        Ok(response.into_body().into_reader())
+    }
+}
+
+/// Percent-encodes a query-string value, keeping the unreserved characters.
+fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// The server's account of a failed request: a JMAP problem document when it

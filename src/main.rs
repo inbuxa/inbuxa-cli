@@ -9,6 +9,7 @@
 
 mod client;
 mod error;
+mod events;
 mod plan;
 mod queue;
 mod reload;
@@ -136,6 +137,24 @@ enum Command {
     #[command(subcommand)]
     Queue(queue::QueueCommand),
 
+    /// Tail the server's log live: trace events as lines
+    Logs {
+        /// Keep only events that match these words
+        #[arg(long)]
+        filter: Option<String>,
+        /// Narrow by a field, as key=value; may be given more than once
+        pairs: Vec<String>,
+    },
+
+    /// Tail the trace stream as JSON, one event a line, for jq and grep
+    Events {
+        /// Keep only events that match these words
+        #[arg(long)]
+        filter: Option<String>,
+        /// Narrow by a field, as key=value; may be given more than once
+        pairs: Vec<String>,
+    },
+
     /// Make the server match a plan
     Apply {
         /// The plan, or - for standard input
@@ -248,6 +267,8 @@ fn run(cli: Cli) -> Result<()> {
         Command::Snapshot { types, output } => snapshot(&client, &schema, &types, output.as_deref()),
         Command::Store(command) => store::run(&client, command),
         Command::Queue(command) => queue::run(&client, &schema, command),
+        Command::Logs { filter, pairs } => events::run(&client, events::View::Logs, filter, &pairs),
+        Command::Events { filter, pairs } => events::run(&client, events::View::Events, filter, &pairs),
         Command::Apply {
             file,
             dry_run,
