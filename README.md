@@ -77,6 +77,11 @@ address.
 | `create TYPE name=value… [--file F]` | creates an object and prints its id |
 | `update TYPE [ID] name=value… [--file F]` | changes properties; a singleton needs no id |
 | `delete TYPE ID…` | deletes objects |
+| `domain add NAME [name=value…]` | adds a domain |
+| `account add EMAIL [name=value…] [--password]` | adds a user account from an address |
+| `group add EMAIL [name=value…]` | adds a group account from an address |
+| `account set-password EMAIL` | sets or replaces an account's password |
+| `account add-alias EMAIL ALIAS` | adds an email alias to an account |
 | `reload [settings\|tls\|lookups\|blocked-ips]` | applies saved settings on the running server |
 | `snapshot [TYPE…] [-o FILE]` | writes the settings as a plan |
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
@@ -100,6 +105,25 @@ current server does that after every write that needs it, and inbuxa-cli
 reports when a reload failed. An older one doesn't, and inbuxa-cli sends the
 reload itself. Stores (data, blob, search and the rest) take effect only when
 the server restarts, and inbuxa-cli says so.
+
+## Shortcuts for the common case
+
+A few verbs do what `create` and `update` do, with less to type. An account
+is given by its address, which splits into a name and a domain, and a password
+is read from `INBUXA_NEW_PASSWORD` or asked for, never the command line.
+
+    inbuxa-cli domain add example.com
+    inbuxa-cli account add alice@example.com --password
+    inbuxa-cli group add staff@example.com
+    inbuxa-cli account set-password alice@example.com
+    inbuxa-cli account add-alias alice@example.com sales@example.com
+
+`account add` and `group add` take extra `name=value` pairs, as `create`
+does, so `account add alice@example.com description="Alice Liddell"` sets the
+full name in the same step. The verbs read the account's shape from the
+server, so they fit whatever this server's accounts, credentials and aliases
+are; for anything they don't cover, `create` and `update` reach every
+property.
 
 ## The store
 
