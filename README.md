@@ -9,7 +9,7 @@ in a file.
 
     inbuxa-cli list Domain                         what's there
     inbuxa-cli create Domain name=example.com      add to it
-    inbuxa-cli snapshot -o server.json             the settings, as a plan
+    inbuxa-cli snapshot --to server.json           the settings, as a plan
     inbuxa-cli apply server.json --dry-run         what a plan would change
 
 Everything the console manages lives in the server's registry: domains,
@@ -61,6 +61,15 @@ in the shell's history.
 `--insecure` skips the TLS certificate check, for a test server with a
 self-signed certificate.
 
+`--output` (`-o`) sets how results print: `table`, `json` or `yaml`. `types`,
+`describe`, `list` and `get` honor it; the default is a table, except `get`,
+which is JSON. The YAML and JSON are the same data, for a program to read.
+Other commands print their own status, not a result to format.
+
+`--quiet` (`-q`) prints only results and errors, nothing about what was done;
+`--verbose` (`-v`) adds a line or two about what's happening. Both are global,
+so they go anywhere on the line.
+
 ## Commands
 
 A type is named as the console's settings pages name it, with or without the
@@ -72,8 +81,8 @@ address.
 | --- | --- |
 | `types` | lists the registry types |
 | `describe TYPE` | shows a type's properties: which are set on create only, which the server sets, which are secret, which refer to other types |
-| `list TYPE [--filter JSON] [--json]` | lists the objects of a type |
-| `get TYPE [ID…]` | prints objects as JSON |
+| `list TYPE [--filter JSON]` | lists the objects of a type |
+| `get TYPE [ID…]` | prints objects, as JSON unless `-o` says otherwise |
 | `create TYPE name=value… [--file F]` | creates an object and prints its id |
 | `update TYPE [ID] name=value… [--file F]` | changes properties; a singleton needs no id |
 | `delete TYPE ID…` | deletes objects |
@@ -84,7 +93,7 @@ address.
 | `account add-alias EMAIL ALIAS` | adds an email alias to an account |
 | `dns DOMAIN` | prints the DNS records a domain needs, as a zone file |
 | `reload [settings\|tls\|lookups\|blocked-ips]` | applies saved settings on the running server |
-| `snapshot [TYPE…] [-o FILE]` | writes the settings as a plan |
+| `snapshot [TYPE…] [--to FILE]` | writes the settings as a plan |
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
 | `store …` | checks the store, takes snapshots, copies after a blob store change: see [The store](#the-store) |
 | `completions SHELL` | prints a shell completion script: see [Shell completions](#shell-completions) |

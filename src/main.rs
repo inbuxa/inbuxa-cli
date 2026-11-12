@@ -10,9 +10,11 @@
 mod client;
 mod error;
 mod events;
+mod output;
 mod plan;
 mod queue;
 mod reload;
+mod report;
 mod schema;
 mod secret;
 mod store;
@@ -33,8 +35,10 @@ use serde_json::{Map, Value, json};
 
 use client::{Auth, Client, set_error};
 use error::{Error, Result};
+use output::Format;
 use plan::Registry;
 use reload::Tracker;
+use report::{detail, note};
 use schema::{Kind, Schema, Update};
 
 #[derive(Parser)]
@@ -61,6 +65,19 @@ struct Cli {
     #[arg(long, global = true)]
     insecure: bool,
 
+    /// How to print results: table, json or yaml (table unless given, except
+    /// `get`, which is json)
+    #[arg(long, short = 'o', global = true, value_name = "FORMAT")]
+    output: Option<Format>,
+
+    /// Say less: print results and errors, nothing else
+    #[arg(long, short = 'q', global = true, conflicts_with = "verbose")]
+    quiet: bool,
+
+    /// Say more about what's happening
+    #[arg(long, short = 'v', global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -79,9 +96,6 @@ enum Command {
         /// A JMAP filter, as JSON
         #[arg(long)]
         filter: Option<String>,
-        /// Print the objects as JSON instead of a table
-        #[arg(long)]
-        json: bool,
     },
 
     /// Print objects as JSON, by id or key; all of them if none is named
@@ -144,8 +158,8 @@ enum Command {
         /// The types to include; every settings type if none
         types: Vec<String>,
         /// Write the plan to this file instead of standard output
-        #[arg(long, short)]
-        output: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        to: Option<String>,
     },
 
     /// Check the store, take snapshots, and copy after a blob store change
@@ -236,12 +250,28 @@ fn connect(cli: &Cli) -> Result<(Client, Schema)> {
         ),
         None => Auth::Bearer(secret::from_env_or_prompt("INBUXA_API_KEY", "API key")?),
     };
+    detail!(
+        "inbuxa-cli: {url}, as {}",
+        match &cli.user {
+            Some(user) => user.as_str(),
+            None => "an API key",
+        }
+    );
     let client = Client::connect(url, auth, cli.insecure)?;
     let schema = Schema::new(client.schema()?)?;
+    detail!("inbuxa-cli: {} registry types", schema.registry_types().len());
     Ok((client, schema))
 }
 
 fn run(cli: Cli) -> Result<()> {
+    report::set(if cli.quiet {
+        report::Level::Quiet
+    } else if cli.verbose {
+        report::Level::Verbose
+    } else {
+        report::Level::Normal
+    });
+
     // Completions and the man page are generated from the command itself and
     // reach no server, so they come before connecting.
     if let Command::Completions { shell } = cli.command {
@@ -256,17 +286,33 @@ fn run(cli: Cli) -> Result<()> {
     }
     let (client, schema) = connect(&cli)?;
     match cli.command {
-        Command::Types => types(&schema),
-        Command::Describe { r#type } => describe(&schema, &schema.resolve(&r#type)?),
-        Command::List { r#type, filter, json } => {
+        Command::Types => types(&schema, Format::or(cli.output, Format::Table)),
+        Command::Describe { r#type } => describe(
+            &schema,
+            &schema.resolve(&r#type)?,
+            Format::or(cli.output, Format::Table),
+        ),
+        Command::List { r#type, filter } => {
             let filter = filter
                 .map(|f| {
                     serde_json::from_str::<Value>(&f).map_err(|e| Error::Usage(format!("--filter: {e}")))
                 })
                 .transpose()?;
-            list(&client, &schema, &schema.resolve(&r#type)?, filter.as_ref(), json)
+            list(
+                &client,
+                &schema,
+                &schema.resolve(&r#type)?,
+                filter.as_ref(),
+                Format::or(cli.output, Format::Table),
+            )
         }
-        Command::Get { r#type, ids } => get(&client, &schema, &schema.resolve(&r#type)?, &ids),
+        Command::Get { r#type, ids } => get(
+            &client,
+            &schema,
+            &schema.resolve(&r#type)?,
+            &ids,
+            Format::or(cli.output, Format::Json),
+        ),
         Command::Create { r#type, pairs, file } => {
             let object = schema.resolve(&r#type)?;
             create(&client, &schema, &object, properties(&pairs, file.as_deref())?)
@@ -316,7 +362,7 @@ fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Snapshot { types, output } => snapshot(&client, &schema, &types, output.as_deref()),
+        Command::Snapshot { types, to } => snapshot(&client, &schema, &types, to.as_deref()),
         Command::Store(command) => store::run(&client, command),
         Command::Queue(command) => queue::run(&client, &schema, command),
         Command::Logs { filter, pairs } => events::run(&client, events::View::Logs, filter, &pairs),
@@ -356,14 +402,41 @@ fn properties(pairs: &[String], file: Option<&str>) -> Result<Map<String, Value>
     Ok(object)
 }
 
-fn print_json(value: &Value) -> Result<()> {
-    let mut out = std::io::stdout().lock();
-    serde_json::to_writer_pretty(&mut out, value)?;
-    writeln!(out)?;
+/// Writes a value to standard output in a structured format.
+fn emit(format: Format, value: &Value) -> Result<()> {
+    let text = match format {
+        Format::Json => output::json(value),
+        Format::Yaml => output::yaml(value),
+        Format::Table => unreachable!("a table is rendered by the command, not here"),
+    };
+    std::io::stdout().write_all(text.as_bytes())?;
     Ok(())
 }
 
-fn types(schema: &Schema) -> Result<()> {
+/// The registry types as structured data, for `types -o json|yaml`.
+fn types_value(schema: &Schema) -> Value {
+    Value::Array(
+        schema
+            .registry_types()
+            .iter()
+            .map(|name| {
+                json!({
+                    "name": name,
+                    "kind": match schema.kind(name) {
+                        Kind::Singleton => "singleton",
+                        Kind::Object => "object",
+                    },
+                    "description": schema.description(name).lines().next().unwrap_or(""),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn types(schema: &Schema, format: Format) -> Result<()> {
+    if format != Format::Table {
+        return emit(format, &types_value(schema));
+    }
     let names = schema.registry_types();
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
     for name in names {
@@ -377,7 +450,87 @@ fn types(schema: &Schema) -> Result<()> {
     Ok(())
 }
 
-fn describe(schema: &Schema, object: &str) -> Result<()> {
+/// One property as structured data, mirroring the `describe` table's columns.
+fn property_values(schema: &Schema, object: &str, sample: Option<&Map<String, Value>>) -> Vec<Value> {
+    let Some(props) = schema.properties(object, sample) else {
+        return Vec::new();
+    };
+    let refs = schema.references(object, sample);
+    props
+        .iter()
+        .map(|(name, spec)| {
+            let t = spec.get("type");
+            let mut kind = t
+                .and_then(|t| t.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned();
+            if let Some(class) = t
+                .and_then(|t| t.get("class"))
+                .and_then(|c| c.get("type"))
+                .and_then(Value::as_str)
+            {
+                kind = format!("{kind} of {class}");
+            }
+            let mut p = Map::new();
+            p.insert("name".into(), json!(name));
+            p.insert("type".into(), json!(kind));
+            if let Some(r) = refs.iter().find(|r| &r.property == name) {
+                p.insert("references".into(), json!(r.target));
+            }
+            match Schema::update_rule(spec) {
+                Update::ServerSet => {
+                    p.insert("update".into(), json!("serverSet"));
+                }
+                Update::Immutable => {
+                    p.insert("update".into(), json!("immutable"));
+                }
+                Update::Mutable => {}
+            }
+            if schema.holds_secret(spec) {
+                p.insert("secret".into(), json!(true));
+            }
+            Value::Object(p)
+        })
+        .collect()
+}
+
+/// A type's shape as structured data, for `describe -o json|yaml`.
+fn describe_value(schema: &Schema, object: &str) -> Value {
+    let mut root = Map::new();
+    root.insert("type".into(), json!(object));
+    root.insert("singleton".into(), json!(schema.kind(object) == Kind::Singleton));
+    if let Some(key) = schema.key_property(object) {
+        root.insert("key".into(), json!(key));
+    }
+    let variants = schema.variants(object);
+    if variants.is_empty() {
+        root.insert(
+            "properties".into(),
+            Value::Array(property_values(schema, object, None)),
+        );
+    } else {
+        let vs: Vec<Value> = variants
+            .iter()
+            .map(|(name, label, _)| {
+                let mut sample = Map::new();
+                sample.insert("@type".into(), json!(name));
+                json!({
+                    "@type": name,
+                    "label": label,
+                    "properties": property_values(schema, object, Some(&sample)),
+                })
+            })
+            .collect();
+        root.insert("variants".into(), Value::Array(vs));
+    }
+    Value::Object(root)
+}
+
+fn describe(schema: &Schema, object: &str, format: Format) -> Result<()> {
+    if format != Format::Table {
+        return emit(format, &describe_value(schema, object));
+    }
     out!(
         "{object}{}",
         if schema.kind(object) == Kind::Singleton {
@@ -466,16 +619,8 @@ fn cell(value: Option<&Value>) -> String {
     }
 }
 
-fn list(client: &Client, schema: &Schema, object: &str, filter: Option<&Value>, as_json: bool) -> Result<()> {
-    let items = if schema.kind(object) == Kind::Singleton {
-        client.get(object, &["singleton".to_owned()])?
-    } else {
-        let ids = client.all_ids(object, filter)?;
-        client.get(object, &ids)?
-    };
-    if as_json {
-        return print_json(&Value::Array(items.into_iter().map(Value::Object).collect()));
-    }
+/// Renders objects as the console's columns: id and the type's list columns.
+fn table(schema: &Schema, object: &str, items: &[Map<String, Value>]) -> Result<()> {
     let mut columns = vec!["id".to_owned()];
     for c in schema.columns(object) {
         if !columns.contains(&c) {
@@ -517,11 +662,35 @@ fn list(client: &Client, schema: &Schema, object: &str, filter: Option<&Value>, 
     for row in &rows {
         line(row)?;
     }
-    eprintln!("{} {object}", rows.len());
     Ok(())
 }
 
-fn get(client: &Client, schema: &Schema, object: &str, names: &[String]) -> Result<()> {
+fn list(
+    client: &Client,
+    schema: &Schema,
+    object: &str,
+    filter: Option<&Value>,
+    format: Format,
+) -> Result<()> {
+    let items = if schema.kind(object) == Kind::Singleton {
+        client.get(object, &["singleton".to_owned()])?
+    } else {
+        let ids = client.all_ids(object, filter)?;
+        client.get(object, &ids)?
+    };
+    let count = items.len();
+    match format {
+        Format::Table => table(schema, object, &items)?,
+        _ => emit(
+            format,
+            &Value::Array(items.into_iter().map(Value::Object).collect()),
+        )?,
+    }
+    note!("{count} {object}");
+    Ok(())
+}
+
+fn get(client: &Client, schema: &Schema, object: &str, names: &[String], format: Format) -> Result<()> {
     let items = match schema.kind(object) {
         Kind::Singleton => client.get(object, &["singleton".to_owned()])?,
         Kind::Object if names.is_empty() => client.get_all(object)?,
@@ -533,12 +702,16 @@ fn get(client: &Client, schema: &Schema, object: &str, names: &[String]) -> Resu
             client.get(object, &ids)?
         }
     };
-    match (schema.kind(object), names.len(), items.len()) {
-        (Kind::Singleton, _, _) | (Kind::Object, 1, 1) => {
-            print_json(&Value::Object(items.into_iter().next().unwrap_or_default()))
-        }
-        _ => print_json(&Value::Array(items.into_iter().map(Value::Object).collect())),
+    if format == Format::Table {
+        return table(schema, object, &items);
     }
+    let value = match (schema.kind(object), names.len(), items.len()) {
+        (Kind::Singleton, _, _) | (Kind::Object, 1, 1) => {
+            Value::Object(items.into_iter().next().unwrap_or_default())
+        }
+        _ => Value::Array(items.into_iter().map(Value::Object).collect()),
+    };
+    emit(format, &value)
 }
 
 /// Prints the DNS records a domain needs: the zone file the server keeps
@@ -564,10 +737,10 @@ fn dns(client: &Client, schema: &Schema, domain: &str) -> Result<()> {
 /// Applies what a write needs applying, and says what's left to do.
 fn finish(client: &Client, mut tracker: Tracker) -> Result<()> {
     for action in tracker.apply(client)? {
-        eprintln!("sent {}", action.name());
+        note!("sent {}", action.name());
     }
     for t in &tracker.restart {
-        eprintln!("note: {t} takes effect when the server restarts");
+        note!("note: {t} takes effect when the server restarts");
     }
     if tracker.failures.is_empty() {
         Ok(())
@@ -612,7 +785,7 @@ fn update(
             set_error(err)
         )));
     }
-    eprintln!("updated {object} {id}");
+    note!("updated {object} {id}");
     let mut tracker = Tracker::default();
     tracker.record(object, &answer);
     finish(client, tracker)
@@ -633,7 +806,7 @@ fn delete(client: &Client, schema: &Schema, object: &str, names: &[String]) -> R
     for (id, name) in ids.iter().zip(names) {
         match answer.get("notDestroyed").and_then(|n| n.get(id)) {
             Some(err) => problems.push(format!("{object} {name} not deleted: {}", set_error(err))),
-            None => eprintln!("deleted {object} {name}"),
+            None => note!("deleted {object} {name}"),
         }
     }
     let mut tracker = Tracker::default();
@@ -661,7 +834,7 @@ fn snapshot(client: &Client, schema: &Schema, names: &[String], output: Option<&
     };
     let (plan, warnings) = plan::snapshot(client, schema, &types)?;
     for w in warnings {
-        eprintln!("note: {w}");
+        note!("note: {w}");
     }
     let mut text = serde_json::to_string_pretty(&plan)?;
     text.push('\n');
@@ -704,7 +877,7 @@ fn apply(client: &Client, schema: &Schema, file: &str, options: plan::Options, y
     applier.run(&plan)?;
     let o = &applier.outcome;
     let verb = if dry_run { "would be " } else { "" };
-    eprintln!(
+    note!(
         "{} {verb}created, {} {verb}updated, {} {verb}deleted, {} unchanged{}",
         o.created,
         o.updated,
