@@ -72,6 +72,7 @@ address.
 | `snapshot [TYPE…] [-o FILE]` | writes the settings as a plan |
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
 | `store …` | checks the store, takes snapshots, copies after a blob store change: see [The store](#the-store) |
+| `completions SHELL` | prints a shell completion script: see [Shell completions](#shell-completions) |
 
 A value that reads as JSON is JSON (`true`, `42`, `["a","b"]`,
 `{"@type":"Stdout"}`); anything else is a string, so `name=example.com` needs
@@ -208,6 +209,19 @@ server makes for each domain. Name a type to include it anyway:
 
 `apply` prints a line per change (`+` created, `~` updated, `-` deleted, `!`
 failed) and a count of each at the end.
+
+## Shell completions
+
+`inbuxa-cli completions SHELL` prints a completion script to standard output,
+for `bash`, `zsh`, `fish`, `powershell` or `elvish`. It reaches no server.
+Install it where the shell looks:
+
+    inbuxa-cli completions bash > /etc/bash_completion.d/inbuxa-cli
+    inbuxa-cli completions zsh  > "${fpath[1]}/_inbuxa-cli"
+    inbuxa-cli completions fish > ~/.config/fish/completions/inbuxa-cli.fish
+
+The script completes the commands above and their flags. Type and object
+names come from the server, so they aren't completed offline.
 
 ## Exit status
 

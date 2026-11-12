@@ -25,7 +25,7 @@ macro_rules! out {
     ($($arg:tt)*) => { writeln!(std::io::stdout(), $($arg)*)? };
 }
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{Map, Value, json};
 
 use client::{Auth, Client, set_error};
@@ -149,6 +149,18 @@ enum Command {
         #[arg(long)]
         write_secrets: bool,
     },
+
+    /// Print a shell completion script to standard output
+    ///
+    /// Source it, or install it where the shell looks:
+    ///   bash: inbuxa-cli completions bash > /etc/bash_completion.d/inbuxa-cli
+    ///   zsh:  inbuxa-cli completions zsh  > "${fpath[1]}/_inbuxa-cli"
+    ///   fish: inbuxa-cli completions fish > ~/.config/fish/completions/inbuxa-cli.fish
+    Completions {
+        /// The shell to generate for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() {
@@ -182,6 +194,14 @@ fn connect(cli: &Cli) -> Result<(Client, Schema)> {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // Completions are generated from the command itself and reach no server,
+    // so they come before connecting.
+    if let Command::Completions { shell } = cli.command {
+        let mut cmd = Cli::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
     let (client, schema) = connect(&cli)?;
     match cli.command {
         Command::Types => types(&schema),
@@ -259,6 +279,8 @@ fn run(cli: Cli) -> Result<()> {
             },
             yes,
         ),
+        // Handled before connecting.
+        Command::Completions { .. } => unreachable!(),
     }
 }
 
@@ -624,4 +646,33 @@ fn apply(client: &Client, schema: &Schema, file: &str, options: plan::Options, y
         return Err(Error::Partial(format!("{failed} change(s) failed")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_complete::Shell;
+
+    #[test]
+    fn the_command_tree_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn completions_generate_for_every_shell() {
+        for shell in [
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Elvish,
+        ] {
+            let mut cmd = Cli::command();
+            let mut out = Vec::new();
+            clap_complete::generate(shell, &mut cmd, "inbuxa-cli", &mut out);
+            let script = String::from_utf8(out).unwrap();
+            assert!(!script.is_empty(), "{shell} produced nothing");
+            assert!(script.contains("snapshot"), "{shell} is missing a subcommand");
+        }
+    }
 }
