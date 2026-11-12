@@ -73,6 +73,7 @@ address.
 | `apply FILE [--dry-run] [--prune] [--yes] [--write-secrets]` | makes the server match a plan |
 | `store …` | checks the store, takes snapshots, copies after a blob store change: see [The store](#the-store) |
 | `completions SHELL` | prints a shell completion script: see [Shell completions](#shell-completions) |
+| `man` | prints a man page, in roff: see [Shell completions](#shell-completions) |
 
 A value that reads as JSON is JSON (`true`, `42`, `["a","b"]`,
 `{"@type":"Stdout"}`); anything else is a string, so `name=example.com` needs
@@ -222,6 +223,10 @@ Install it where the shell looks:
 
 The script completes the commands above and their flags. Type and object
 names come from the server, so they aren't completed offline.
+
+`inbuxa-cli man` prints a man page, in roff, to standard output:
+
+    inbuxa-cli man > /usr/share/man/man1/inbuxa-cli.1
 
 ## Exit status
 

@@ -161,6 +161,11 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Print a man page, in roff, to standard output
+    ///
+    ///   inbuxa-cli man > /usr/share/man/man1/inbuxa-cli.1
+    Man,
 }
 
 fn main() {
@@ -194,12 +199,16 @@ fn connect(cli: &Cli) -> Result<(Client, Schema)> {
 }
 
 fn run(cli: Cli) -> Result<()> {
-    // Completions are generated from the command itself and reach no server,
-    // so they come before connecting.
+    // Completions and the man page are generated from the command itself and
+    // reach no server, so they come before connecting.
     if let Command::Completions { shell } = cli.command {
         let mut cmd = Cli::command();
         let name = cmd.get_name().to_string();
         clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
+    if let Command::Man = cli.command {
+        clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
         return Ok(());
     }
     let (client, schema) = connect(&cli)?;
@@ -280,7 +289,7 @@ fn run(cli: Cli) -> Result<()> {
             yes,
         ),
         // Handled before connecting.
-        Command::Completions { .. } => unreachable!(),
+        Command::Completions { .. } | Command::Man => unreachable!(),
     }
 }
 
@@ -674,5 +683,20 @@ mod tests {
             assert!(!script.is_empty(), "{shell} produced nothing");
             assert!(script.contains("snapshot"), "{shell} is missing a subcommand");
         }
+    }
+
+    #[test]
+    fn the_man_page_renders() {
+        let mut out = Vec::new();
+        clap_mangen::Man::new(Cli::command()).render(&mut out).unwrap();
+        let page = String::from_utf8(out).unwrap();
+        assert!(
+            page.contains("inbuxa-cli"),
+            "the man page should name the program"
+        );
+        assert!(
+            page.contains("SUBCOMMANDS"),
+            "the man page should list the subcommands"
+        );
     }
 }

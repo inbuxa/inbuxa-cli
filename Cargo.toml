@@ -21,6 +21,7 @@ ureq = { version = "3.3.0", default-features = false, features = ["json", "gzip"
 rustls = { version = "0.23.40", default-features = false, features = ["aws-lc-rs", "std", "tls12", "logging"] }
 base64 = "0.22"
 clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 
 [profile.release]
 lto = "thin"
