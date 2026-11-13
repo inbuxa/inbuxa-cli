@@ -58,6 +58,28 @@ recovery mode, or when it runs with `INBUXA_HTTP_BASIC_AUTH=all`. There,
 or asks for it. Secrets never go on the command line, where they would end up
 in the shell's history.
 
+### A shared profile
+
+Instead of giving the address and key each time, name a server once in
+`~/.config/inbuxa/config.toml`. `inbuxa-migrate` reads the same file, so one
+place names the server both tools work with.
+
+    [profile.default]
+    url = "https://mail.example.com"
+    api-key = "API_…"
+
+    [profile.staging]
+    url = "https://staging.example.com"
+    api-key-file = "~/.secrets/staging.key"
+
+A section gives `url` and either `api-key` or `api-key-file` (a path to a file
+holding the key, so the key stays out of the config). Keep the file to
+yourself — `chmod 600 ~/.config/inbuxa/config.toml`. Without `--profile` or
+`INBUXA_PROFILE`, the `default` section is used; `--profile staging` or
+`INBUXA_PROFILE=staging` picks another. A flag or an `INBUXA_*` variable
+always wins over the profile, so the file is only the fallback and nothing has
+to change to point at a different server once.
+
 `--insecure` skips the TLS certificate check, for a test server with a
 self-signed certificate.
 

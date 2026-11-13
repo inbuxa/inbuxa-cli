@@ -15,14 +15,24 @@ use crate::error::{Error, Result};
 /// The value of `var`, or what the person types at a prompt that doesn't
 /// echo. Without a terminal to prompt on, says which variable to set.
 pub fn from_env_or_prompt(var: &str, label: &str) -> Result<String> {
+    from_env_or(var, label, None)
+}
+
+/// Like [`from_env_or_prompt`], but a non-empty `fallback` (from a profile)
+/// is used when `var` is unset, before asking at a prompt.
+pub fn from_env_or(var: &str, label: &str, fallback: Option<String>) -> Result<String> {
     if let Ok(value) = std::env::var(var)
         && !value.is_empty()
     {
         return Ok(value);
     }
+    if let Some(value) = fallback.filter(|v| !v.is_empty()) {
+        return Ok(value);
+    }
     if !std::io::stdin().is_terminal() {
         return Err(Error::Usage(format!(
-            "no {label}: set {var}, or run this in a terminal to be asked for it"
+            "no {label}: set {var}, name one in a profile, or run this in a terminal \
+             to be asked for it"
         )));
     }
     prompt(label)
