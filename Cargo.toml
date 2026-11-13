@@ -20,6 +20,7 @@ thiserror = "2.0.18"
 ureq = { version = "3.3.0", default-features = false, features = ["json", "gzip", "rustls-no-provider", "platform-verifier"] }
 rustls = { version = "0.23.40", default-features = false, features = ["aws-lc-rs", "std", "tls12", "logging"] }
 base64 = "0.22"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 clap_complete = "4.6.11"
 clap_mangen = "0.3.3"
 

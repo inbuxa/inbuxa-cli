@@ -12,6 +12,7 @@ mod error;
 mod events;
 mod output;
 mod plan;
+mod profile;
 mod queue;
 mod reload;
 mod report;
@@ -60,6 +61,12 @@ struct Cli {
     /// for) instead of an API key
     #[arg(long, env = "INBUXA_USER", global = true)]
     user: Option<String>,
+
+    /// Which profile to read from ~/.config/inbuxa/config.toml for the url
+    /// and API key a flag or variable doesn't give (default: the "default"
+    /// profile)
+    #[arg(long, env = "INBUXA_PROFILE", global = true)]
+    profile: Option<String>,
 
     /// Don't check the server's TLS certificate
     #[arg(long, global = true)]
@@ -239,16 +246,20 @@ fn main() {
 }
 
 fn connect(cli: &Cli) -> Result<(Client, Schema)> {
-    let url = cli
-        .url
-        .as_deref()
-        .ok_or_else(|| Error::Usage("which server? Give --url or set INBUXA_URL".into()))?;
+    let profile = profile::Profile::load(cli.profile.as_deref())?;
+    let url = cli.url.as_deref().or(profile.url.as_deref()).ok_or_else(|| {
+        Error::Usage(
+            "which server? Give --url, set INBUXA_URL, or name one in \
+             ~/.config/inbuxa/config.toml"
+                .into(),
+        )
+    })?;
     let auth = match &cli.user {
         Some(user) => Auth::Basic(
             user.clone(),
             secret::from_env_or_prompt("INBUXA_PASSWORD", "password")?,
         ),
-        None => Auth::Bearer(secret::from_env_or_prompt("INBUXA_API_KEY", "API key")?),
+        None => Auth::Bearer(secret::from_env_or("INBUXA_API_KEY", "API key", profile.api_key)?),
     };
     detail!(
         "inbuxa-cli: {url}, as {}",
